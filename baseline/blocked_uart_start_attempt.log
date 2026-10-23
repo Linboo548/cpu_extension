@@ -1,0 +1,16 @@
+ECHO is off.
+ECHO is off.
+
+****** xsim v2023.2 (64-bit)
+  **** SW Build 4029153 on Fri Oct 13 20:14:34 MDT 2023
+  **** IP Build 4028589 on Sat Oct 14 00:45:43 MDT 2023
+  **** SharedData Build 4025554 on Tue Oct 10 17:18:54 MDT 2023
+    ** Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+    ** Copyright 2022-2023 Advanced Micro Devices, Inc. All Rights Reserved.
+
+source xsim.dir/uart_check/xsim_script.tcl
+# xsim {uart_check} -autoloadwcfg -runall
+ERROR: [Simtcl 6-50] Simulation engine failed to start: Simulation exited with status code -1073741819.
+Please see the Tcl Console or the Messages for details.
+exit
+INFO: [Common 17-206] Exiting xsim at Thu Oct 22 23:35:35 2026...

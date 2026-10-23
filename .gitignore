@@ -1,0 +1,11 @@
+build/
+xsim.dir/
+vivado/
+*.jou
+*.log
+*.pb
+*.wdb
+*.vcd
+__pycache__/
+# baseline中的原始验证日志是有意保留的交付证据
+!baseline/*.log

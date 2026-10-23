@@ -1,0 +1,5 @@
+GPIO = 0x1faff000
+UART = 0x1faff100
+wait_irq = 0x1c000038
+irq_handler = 0x1c000100
+wait_tx = 0x1c000118

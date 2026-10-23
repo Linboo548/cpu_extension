@@ -1,0 +1,6 @@
+loop = 0x1c000010
+load_ok = 0x1c000028
+after_call = 0x1c00003c
+done = 0x1c000048
+link_test = 0x1c00004c
+fail = 0x1c000054
