@@ -34,7 +34,20 @@ initial begin
  train(pc,0,0,0,0); #1;
  if(taken!==0) $fatal(1,"nonbranch did not invalidate stale BTB");
  if(branches!==6) $fatal(1,"training count wrong: %d", branches);
- $display("PASS predictor: saturation, hysteresis, PC tags, stale invalidation");
+ train(pc,1,0,1,32'h1c000120); #1;
+ if(taken!==1 || pt!==32'h1c000120) $fatal(1,"target update failed");
+ pc=32'h1c000081; #1;
+ if(taken!==0) $fatal(1,"misaligned lookup predicted a branch");
+ pc=32'h1c000080;
+ @(negedge clk); reset=1;
+ @(negedge clk); #1;
+ if(taken!==0 || branches!==0 || misses!==0) $fatal(1,"reset did not clear predictor");
+ reset=0;
+ train(pc,1,1,0,32'h1c000100); #1;
+ if(taken!==0) $fatal(1,"first not-taken branch predicted taken");
+ train(pc,1,1,1,32'h1c000100); #1;
+ if(taken!==1) $fatal(1,"weak not-taken counter failed to advance");
+ $display("PASS predictor: saturation, hysteresis, PC tags, target changes, alignment, reset");
  $finish;
 end
 initial begin #10000; $fatal(1,"predictor timeout"); end
