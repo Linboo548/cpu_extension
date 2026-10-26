@@ -70,11 +70,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('test', choices=['predictor','uart','cpu_branch','soc_uart','ex8','ex9'])
     ap.add_argument('--vivado', default='D:/Vivado/Vivado/2023.2')
+    ap.add_argument('--predictor', type=int, choices=(0, 1), default=1,
+                    help='Prediction switch for ex9 regression (default: 1)')
     ap.add_argument('--llvm-fallback',action='store_true',
                     help='Experimental local diagnostic; not required in a working Vivado installation')
     ns=ap.parse_args()
     vivado=Path(ns.vivado)
-    build=ROOT/'build'/ns.test
+    if ns.test != 'ex9' and not ns.predictor:
+        ap.error('--predictor 0 is only supported for ex9')
+    build=ROOT/'build'/('ex9_bp0' if ns.test=='ex9' and not ns.predictor else ns.test)
     build.mkdir(parents=True,exist_ok=True)
     cpu_dir=ROOT/'mycpu_env/myCPU'
     rtl_dir=ROOT/'mycpu_env/soc_verify/soc_bram/rtl'
@@ -94,6 +98,9 @@ def main():
     if ns.test in ('ex8','ex9'):
         files.append(ROOT/'mycpu_env/soc_verify/soc_bram/testbench/mycpu_tb.v')
         top='tb_top'
+        if ns.test=='ex9' and not ns.predictor:
+            files.append(ROOT/'tests/tb_ex9_bp0.sv')
+            top='tb_ex9_bp0'
         if ns.test=='ex9': shutil.copy2(ROOT/'baseline/ex9_golden_trace.txt',build/'golden_trace.txt')
     else: files.append(ROOT/'tests'/('tb_'+ns.test+'.sv'))
     rc,out=command([vivado/'bin/xvlog.bat','-sv','-i',cpu_dir,*files],build,build/'compile.log')
@@ -111,7 +118,9 @@ def main():
     task_env=dict(os.environ)
     task_env['PATH']=str(vivado/'lib/win64.o')+';'+str(vivado/'tps/mingw/9.3.0/win64.o/nt/bin')+';'+task_env.get('PATH','')
     task_env['XILINX_VIVADO']=str(vivado)
-    rc,out=command([build/'xsim.dir'/snapshot/'xsimk.exe'],build,build/'simulate.log',env=task_env,
+    simulator = ([build/'axsim.bat', '-runall'] if (build/'axsim.bat').exists()
+                 else [build/'xsim.dir'/snapshot/'xsimk.exe'])
+    rc,out=command(simulator,build,build/'simulate.log',env=task_env,
                     timeout=600 if ns.test in ('ex8','ex9') else 45)
     print(out)
     passed=('----PASS!!!' in out if ns.test in ('ex8','ex9') else 'PASS ' in out)
