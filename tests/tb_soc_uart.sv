@@ -1,14 +1,19 @@
 `timescale 1ns/1ps
-module tb_soc_uart;
+module tb_soc_uart #(parameter BR_PREDICT_ENABLE=1,
+                     parameter ICACHE_ENABLE=1, parameter DCACHE_ENABLE=1);
 localparam CPB=64;
 reg clk=0;always #5 clk=~clk;
 reg resetn=0,rx=1;wire tx;wire [15:0] led;wire [31:0] num;
 integer tx_count=0,irq_count=0,return_count=0;
 reg [7:0] expected[0:2];reg [7:0] got;integer j;
-soc_lite_top #(.SIMULATION(1),.UART_CLKS_PER_BIT(CPB)) dut(
+soc_lite_top #(.SIMULATION(1)) dut(
  .clk(clk),.resetn(resetn),.switch(8'h5a),.btn_step(2'b11),.btn_key_row(4'hf),
  .led(led),.led_rg0(),.led_rg1(),.num_csn(),.num_a_g(),.num_data(num),
  .btn_key_col(),.uart_rx(rx),.uart_tx(tx));
+defparam dut.cpu.BR_PREDICT_ENABLE=BR_PREDICT_ENABLE;
+defparam dut.cpu.ICACHE_ENABLE=ICACHE_ENABLE;
+defparam dut.cpu.DCACHE_ENABLE=DCACHE_ENABLE;
+defparam dut.cpu.UART_CLKS_PER_BIT=CPB;
 task send_byte(input [7:0] b);
  integer k;
  begin
@@ -20,7 +25,7 @@ endtask
 initial begin
  expected[0]=8'h41;expected[1]=8'h42;expected[2]=8'h7e;
  repeat(8) @(negedge clk);resetn=1;
- wait(dut.cpu.u_csr.csr_crmd_ie && dut.u_uart.irq_enable);
+ wait(dut.cpu.u_csr.csr_crmd_ie && dut.cpu.u_uart.irq_enable);
  repeat(30) @(negedge clk);
  for(integer k=0;k<3;k=k+1) begin
   send_byte(expected[k]);
@@ -28,7 +33,7 @@ initial begin
   repeat(2*CPB) @(negedge clk);
  end
  repeat(2*CPB) @(negedge clk);
- if(irq_count!=3 || num!==3 || led!==16'h007e || dut.u_uart.irq!==0)
+ if(irq_count!=3 || num!==3 || led!==16'h007e || dut.cpu.u_uart.irq!==0)
   $fatal(1,"UART interrupt/display result wrong irq=%d num=%h led=%h",irq_count,num,led);
  $display("PASS SoC: 3 UART RX interrupts, EENTRY/ERA/ERTN, serial echo, LED and numeric display");
  $finish;

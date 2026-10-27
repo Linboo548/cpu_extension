@@ -21,6 +21,9 @@ module IF_stage #(parameter BR_PREDICT_ENABLE = 1)(
     output wire [31:0]                  inst_sram_addr,
     output wire [31:0]                  inst_sram_wdata,
     input  wire [31:0]                  inst_sram_rdata,
+    // Cache hit completes immediately; a miss holds the request until ready.
+    input  wire                         inst_sram_ready,
+    output wire                         inst_sram_cancel,
     // [新增] 统计已解析的分支及预测错误数，可供MMIO读取。
     output wire [31:0] bp_branch_count,
     output wire [31:0] bp_miss_count
@@ -32,13 +35,16 @@ reg [31:0]  fs_pc;
 wire        fs_ready_go;
 wire        fs_allowin;
 wire        to_fs_valid;
-wire        pre_if_ready_go;
 
 wire        br_taken;
 wire [31:0] br_target;
-// 候选：ID 当拍只杀死错误路径，下一拍由寄存后的目标发起纠错取指。
+// ID 当拍只杀死错误路径，寄存后的取消信号避免接回 ID -> RAM 长路径。
 reg         redirect_pending;
 reg [31:0]  redirect_target;
+reg         redirect_cancel;
+// 已经开始的 miss 必须保持原请求地址，不能随 fs_valid 或 BTB 改变。
+reg         fetch_waiting;
+reg [31:0]  fetch_addr;
 
 wire [31:0] seq_pc;
 wire [31:0] nextpc;
@@ -76,15 +82,25 @@ branch_predictor #(.ENABLE(BR_PREDICT_ENABLE)) u_predictor (
 // 只有IF->ID接收的同一上升沿才使用这个预测值并取下一条指令。
 assign fs_pred_nextpc = (fs_valid && !fs_adef && bp_taken) ? bp_target : seq_pc;
 
-// 保持原 ID 解析/训练事件，不把延后的 redirect_pending 当成第二次解析。
-// WB 的异常和 ERTN 优先清除所有较年轻分支留下的纠错请求。
+// 重定向目标一直保留到取指完成；异常/ERTN 优先于较年轻分支。
+// redirect_cancel 只维持一拍，取消旧 miss 后可继续请求新目标。
 always @(posedge clk) begin
-    if (reset || wb_flush) begin
+    if (reset) begin
         redirect_pending <= 1'b0;
         redirect_target <= 32'b0;
+        redirect_cancel <= 1'b0;
+    end else if (wb_flush) begin
+        redirect_pending <= 1'b1;
+        redirect_target <= wb_ex ? ex_entry : ertn_entry;
+        redirect_cancel <= 1'b0;
     end else begin
-        redirect_pending <= br_taken;
-        if (br_taken) redirect_target <= br_target;
+        redirect_cancel <= br_taken;
+        if (br_taken) begin
+            redirect_pending <= 1'b1;
+            redirect_target <= br_target;
+        end else if (redirect_pending && to_fs_valid) begin
+            redirect_pending <= 1'b0;
+        end
     end
 end
 
@@ -93,17 +109,17 @@ end
 // Pre-IF：选择下一次取指地址
 //==============================================================
 
-assign pre_if_ready_go = 1'b1;
-assign to_fs_valid = !reset && pre_if_ready_go;
+// 请求与完成分开，不能用 ready 门控请求而形成组合环。
+assign to_fs_valid = !reset && !inst_sram_cancel &&
+                     (fs_allowin || redirect_pending) &&
+                     (nextpc_adef || inst_sram_ready);
 
 assign seq_pc = fs_pc + 32'd4;
 
-// 修改：异常 > ERTN > 普通分支 > 顺序取指
+// 异常/ERTN 已锁存到 redirect_target；miss 期间继续使用同一地址。
 assign nextpc =
-    wb_ex      ? ex_entry   :
-    ertn_flush ? ertn_entry :
     redirect_pending ? redirect_target :
-                 fs_pred_nextpc;
+    fetch_waiting    ? fetch_addr : fs_pred_nextpc;
 
 
 //==============================================================
@@ -122,6 +138,7 @@ assign fs_to_ds_valid =
     fs_ready_go &&
     !br_taken &&
     !redirect_pending &&
+    !redirect_cancel &&
     !wb_flush;
 
 
@@ -132,9 +149,11 @@ assign fs_to_ds_valid =
 // 修改：非对齐地址不向 RAM 发起请求，
 // 但仍通过 IF 有效位传递一条带 ADEF 标志的异常指令。
 assign inst_sram_en =
-    to_fs_valid &&
-    (fs_allowin || wb_flush || redirect_pending) &&
+    !reset && !inst_sram_cancel &&
+    (fs_allowin || redirect_pending) &&
     !nextpc_adef;
+
+assign inst_sram_cancel = wb_flush || redirect_cancel;
 
 assign inst_sram_we    = 4'b0000;
 assign inst_sram_addr  = nextpc;
@@ -146,33 +165,29 @@ assign inst_sram_wdata = 32'b0;
 //==============================================================
 
 always @(posedge clk) begin
-    if (reset) begin
+    if (reset || wb_flush || br_taken || redirect_cancel) begin
         fs_valid <= 1'b0;
     end
-    else if (wb_flush || redirect_pending) begin
-        /*
-         * 新增：
-         * 本上升沿 RAM 已经接收异常/返回目标地址。
-         * 上升沿后 fs_pc 与 RAM 返回的目标指令对应，
-         * 因此 IF 保存的是新的有效目标指令。
-         */
-        fs_valid <= to_fs_valid;
-    end
-    else if (br_taken) begin
-        // 本沿 RAM 可以完成一次错误路径预取，但它不能成为有效 IF 指令。
-        // 不用 br_taken 门控 RAM enable，避免重新接回 ID→指令 BRAM 长路径。
-        fs_valid <= 1'b0;
-    end
-    else if (fs_allowin) begin
+    else if (fs_allowin || redirect_pending) begin
+        // 仅完成请求才生成有效 token，miss 期间不重复发送旧指令。
         fs_valid <= to_fs_valid;
     end
 
     if (reset) begin
         fs_pc <= 32'h1bff_fffc;
     end
-    else if (to_fs_valid && (fs_allowin || wb_flush || redirect_pending)) begin
-        // 修改：重定向不受 ID 阻塞影响
+    else if (to_fs_valid && !br_taken) begin
         fs_pc <= nextpc;
+    end
+
+    if (reset || wb_flush || br_taken || redirect_cancel) begin
+        fetch_waiting <= 1'b0;
+        fetch_addr <= 32'b0;
+    end else if (to_fs_valid) begin
+        fetch_waiting <= 1'b0;
+    end else if (inst_sram_en && !inst_sram_ready) begin
+        fetch_waiting <= 1'b1;
+        fetch_addr <= nextpc;
     end
 end
 
@@ -192,7 +207,7 @@ always @(posedge clk) begin
     if (reset) begin
         fs_adef <= 1'b0;
     end
-    else if (to_fs_valid && (fs_allowin || wb_flush || redirect_pending)) begin
+    else if (to_fs_valid && !br_taken) begin
         fs_adef <= nextpc_adef;
     end
 end

@@ -41,7 +41,9 @@ THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 `define CONFREG_UART_DATA    soc_lite.u_confreg.write_uart_data
 `define END_PC 32'h1c000100
 
-module tb_top #(parameter BR_PREDICT_ENABLE=1, parameter TRACE_ENABLE=1)( );
+module tb_top #(parameter BR_PREDICT_ENABLE=1, parameter TRACE_ENABLE=1,
+                parameter ICACHE_ENABLE=1, parameter DCACHE_ENABLE=1,
+                parameter DUMP_ENABLE=0)( );
 reg resetn;
 reg clk;
 
@@ -61,15 +63,17 @@ assign btn_step    = 2'd3;
 
 initial
 begin
-    $dumpfile("dump.vcd");
-    $dumpvars;
+    if (DUMP_ENABLE) begin
+        $dumpfile("dump.vcd");
+        $dumpvars;
+    end
     clk = 1'b0;
     resetn = 1'b0;
     #2000;
     resetn = 1'b1;
 end
 always #5 clk=~clk;
-soc_lite_top #(.SIMULATION(1'b1),.BR_PREDICT_ENABLE(BR_PREDICT_ENABLE)) soc_lite
+soc_lite_top #(.SIMULATION(1'b1)) soc_lite
 (
        .resetn      (resetn     ), 
        .clk         (clk        ),
@@ -87,6 +91,9 @@ soc_lite_top #(.SIMULATION(1'b1),.BR_PREDICT_ENABLE(BR_PREDICT_ENABLE)) soc_lite
         .uart_rx    (1'b1), // [新增] 回归测试时真实UART保持空闲
         .uart_tx    ()
     );   
+defparam soc_lite.cpu.BR_PREDICT_ENABLE=BR_PREDICT_ENABLE;
+defparam soc_lite.cpu.ICACHE_ENABLE=ICACHE_ENABLE;
+defparam soc_lite.cpu.DCACHE_ENABLE=DCACHE_ENABLE;
 
 //soc lite signals
 //"soc_clk" means clk in cpu

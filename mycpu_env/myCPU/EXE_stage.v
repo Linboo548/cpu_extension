@@ -23,6 +23,7 @@ module EXE_stage(
     output wire [3:0]                   data_sram_we,
     output wire [31:0]                  data_sram_addr,
     output wire [31:0]                  data_sram_wdata,
+    input  wire                         data_sram_ready,
 
     /* 提供给 ID 阶段的前递信息 */
     output wire                         es_valid_out,
@@ -407,11 +408,13 @@ assign store_data =
 // 新增：EXE 访存是否允许真正发出
 //==============================================================
 wire es_mem_access_ok;
+wire es_execute_ready = es_has_ex || !es_div_op || div_complete;
+wire es_needs_memory = (es_load_op || es_mem_we) && !es_has_ex && !es_ertn;
 
 // 修改：所有异常都禁止发出访存，尤其是 ALE
 assign es_mem_access_ok =
     es_valid &&
-    es_ready_go &&
+    es_execute_ready &&
     ms_allowin &&
     !reset &&
     !wb_flush &&
@@ -507,10 +510,8 @@ assign es_to_ms_bus = {
  */
 // 修改：已经发生异常时直接向后传递异常信息。
 // 即使原指令是除法，也不能等待一个根本没有启动的除法请求。
-assign es_ready_go =
-    es_has_ex ||
-    !es_div_op ||
-    div_complete;
+// 请求有效不依赖 Cache ready；缺失时保持 EXE 指令和地址，直到完成。
+assign es_ready_go = es_execute_ready && (!es_needs_memory || data_sram_ready);
     
 assign es_allowin =
     ~es_valid ||
