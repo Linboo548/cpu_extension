@@ -1,10 +1,17 @@
 `include "mycpu_head.v"
 
-module mycpu_top #(parameter BR_PREDICT_ENABLE = 1)(
+module mycpu_top #(
+    parameter BR_PREDICT_ENABLE = 1,
+    // 默认CPU为50MHz、UART为115200波特；仿真可在CPU实例覆盖位周期。
+    parameter UART_CLKS_PER_BIT = 50000000/115200
+)(
     input  wire        clk,
     input  wire        resetn,
     // 新增：外部8路硬件中断
-    input wire [7:0] hw_int_in,
+    input tri0 [7:0] hw_int_in,
+    // 未连接串口时保持 RX 空闲；SoC/板级只需透传这两个引脚。
+    input tri1 uart_rx,
+    output wire uart_tx,
 
     output wire        inst_sram_en,
     output wire [3:0]  inst_sram_we,
@@ -52,6 +59,37 @@ wire ms_flush_pending;
 
 wire reset = ~resetn;
 
+// EXE 已完成异常、清空和流水线握手检查；仅对真正允许发出的请求译码。
+wire        core_data_en;
+wire [3:0]  core_data_we;
+wire [31:0] core_data_addr, core_data_wdata;
+wire [31:0] mem_data_rdata, uart_rdata;
+wire uart_irq;
+wire uart_select = (core_data_addr & 32'h1fff_ffe0) == 32'h1faf_f100;
+wire uart_access = core_data_en && uart_select;
+reg uart_select_r;
+
+assign data_sram_en = core_data_en && !uart_select;
+assign data_sram_we = core_data_we & {4{data_sram_en}};
+assign data_sram_addr = core_data_addr;
+assign data_sram_wdata = core_data_wdata;
+
+// UART 和外部同步 RAM 均在请求沿后返回数据；选择位也在同一沿寄存。
+always @(posedge clk) begin
+    if (reset) uart_select_r <= 1'b0;
+    else if (core_data_en) uart_select_r <= uart_select;
+end
+assign mem_data_rdata = uart_select_r ? uart_rdata : data_sram_rdata;
+
+// UART 与外部硬中断0共用一位；未连接的外部中断由 tri0 默认为0。
+wire [7:0] cpu_hw_int = hw_int_in | {7'b0, uart_irq};
+cpu_uart_mmio #(.DEFAULT_CLKS_PER_BIT(UART_CLKS_PER_BIT)) u_uart (
+    .clk(clk), .resetn(resetn), .en(uart_access), .we(core_data_we),
+    .addr(core_data_addr[4:0]), .wdata(core_data_wdata), .rdata(uart_rdata),
+    .uart_rx(uart_rx), .uart_tx(uart_tx), .irq(uart_irq),
+    .bp_branch_count(bp_branch_count), .bp_miss_count(bp_miss_count)
+);
+
 /* IF <-> ID */
 wire                         ds_allowin;
 wire                         fs_to_ds_valid;
@@ -87,12 +125,12 @@ wire [31:0] es_alu_result;
 wire        ms_valid;
 wire        ms_gr_we;
 wire [4:0]  ms_dest;
-wire [31:0] ms_final_result;
+wire [31:0] ms_forward_result;
 
 //==============================================================
-// 新增：MEM → ID 的 CSR 等待标志
+// MEM → ID 的 load/CSR 结果等待标志
 //==============================================================
-wire ms_csr_re;
+wire ms_result_pending;
 
 //==============================================================
 // 新增：WB ? CSR 接口
@@ -165,10 +203,10 @@ ID_stage u_ID_stage(
     .ms_valid        (ms_valid),
     .ms_gr_we        (ms_gr_we),
     .ms_dest         (ms_dest),
-    .ms_final_result (ms_final_result),
+    .ms_forward_result (ms_forward_result),
 
      // 新增
-    .ms_csr_re       (ms_csr_re)
+    .ms_result_pending (ms_result_pending)
 );
 
 EXE_stage u_EXE_stage(
@@ -189,10 +227,10 @@ EXE_stage u_EXE_stage(
     .es_to_ms_valid    (es_to_ms_valid),
     .es_to_ms_bus      (es_to_ms_bus),
 
-    .data_sram_en      (data_sram_en),
-    .data_sram_we      (data_sram_we),
-    .data_sram_addr    (data_sram_addr),
-    .data_sram_wdata   (data_sram_wdata),
+    .data_sram_en      (core_data_en),
+    .data_sram_we      (core_data_we),
+    .data_sram_addr    (core_data_addr),
+    .data_sram_wdata   (core_data_wdata),
 
     .es_valid_out      (es_valid),
     .es_gr_we_out      (es_gr_we),
@@ -219,15 +257,15 @@ MEM_stage u_MEM_stage(
     .ms_to_ws_valid      (ms_to_ws_valid),
     .ms_to_ws_bus        (ms_to_ws_bus),
 
-    .data_sram_rdata     (data_sram_rdata),
+    .data_sram_rdata     (mem_data_rdata),
 
     .ms_valid_out        (ms_valid),
     .ms_gr_we_out        (ms_gr_we),
     .ms_dest_out         (ms_dest),
-    .ms_final_result_out (ms_final_result),
+    .ms_forward_result_out (ms_forward_result),
 
     // 新增
-    .ms_csr_re_out       (ms_csr_re)
+    .ms_result_pending_out (ms_result_pending)
 );
 
 WB_stage u_WB_stage(
@@ -274,7 +312,7 @@ csr u_csr(
     .csr_num      (csr_num),
     .csr_rvalue   (csr_rvalue),
     
-    .hw_int_in      (hw_int_in),
+    .hw_int_in      (cpu_hw_int),
     .has_int        (has_int),
     .wb_badv        (wb_badv),
 

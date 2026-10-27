@@ -64,12 +64,7 @@ THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //   at this time, cpu_clk/timer_clk frequency are both 100MHz, same as clk.
 `define SIMU_USE_PLL 0 //set 0 to speed up simulation
 
-module soc_lite_top #(
-    parameter SIMULATION=1'b0,
-    parameter BR_PREDICT_ENABLE=1,
-    // [新增] 现有PLL输出CPU=50MHz；加速仿真时输入时钟通常为100MHz。
-    parameter UART_CLKS_PER_BIT=(SIMULATION ? 100000000 : 50000000)/115200
-)
+module soc_lite_top #(parameter SIMULATION=1'b0)
 (
     input  wire        resetn, 
     input  wire        clk,
@@ -85,8 +80,8 @@ module soc_lite_top #(
     output wire [3 :0] btn_key_col,
     input  wire [3 :0] btn_key_row,
     input  wire [1 :0] btn_step,
-    input  wire uart_rx,
-    output wire uart_tx
+    input  wire        uart_rx,
+    output wire        uart_tx
 );
 //debug signals
 wire [31:0] debug_wb_pc;
@@ -143,20 +138,13 @@ wire [3 :0] conf_we;
 wire [31:0] conf_addr;
 wire [31:0] conf_wdata;
 wire [31:0] conf_rdata;
-// [新增] UART MMIO及预测器性能计数。
-wire uart_en, uart_irq;
-wire [3:0] uart_we;
-wire [4:0] uart_addr;
-wire [31:0] uart_wdata, uart_rdata, bp_branch_count, bp_miss_count;
 
 //cpu
-mycpu_top #(.BR_PREDICT_ENABLE(BR_PREDICT_ENABLE)) cpu(
+mycpu_top cpu(
     .clk              (cpu_clk   ),
     .resetn           (cpu_resetn),  //low active
-    
-    // 新增：当前基础 SoC 没有提供外部中断源，先固定为0。
-    // 验证硬件中断时，将这里替换为实际的8位中断信号。
-    .hw_int_in        ({7'b0,uart_irq}), // [修改] RX中断接硬件中断0，复位默认屏蔽
+    .uart_rx          (uart_rx),
+    .uart_tx          (uart_tx),
 
     .inst_sram_en     (cpu_inst_en   ),
     .inst_sram_we     (cpu_inst_we   ),
@@ -174,9 +162,7 @@ mycpu_top #(.BR_PREDICT_ENABLE(BR_PREDICT_ENABLE)) cpu(
     .debug_wb_pc      (debug_wb_pc      ),
     .debug_wb_rf_we   (debug_wb_rf_we   ),
     .debug_wb_rf_wnum (debug_wb_rf_wnum ),
-    .debug_wb_rf_wdata(debug_wb_rf_wdata),
-    .bp_branch_count(bp_branch_count),
-    .bp_miss_count(bp_miss_count)
+    .debug_wb_rf_wdata(debug_wb_rf_wdata)
 );
 
 //inst ram
@@ -210,18 +196,8 @@ bridge_1x2 bridge_1x2(
     .conf_we         ( conf_we         ), // o, 4                 
     .conf_addr       ( conf_addr       ), // o, 32                
     .conf_wdata      ( conf_wdata      ), // o, 32                
-    .conf_rdata      ( conf_rdata      ), // i, 32
-    .uart_en(uart_en), .uart_we(uart_we), .uart_addr(uart_addr),
-    .uart_wdata(uart_wdata), .uart_rdata(uart_rdata)
+    .conf_rdata      ( conf_rdata      )  // i, 32                
  );
-
-// [新增] 与原RAM相同的一拍读接口，不改变EXE/MEM的访存握手。
-uart_mmio #(.DEFAULT_CLKS_PER_BIT(UART_CLKS_PER_BIT)) u_uart (
-    .clk(cpu_clk), .resetn(cpu_resetn), .en(uart_en), .we(uart_we),
-    .addr(uart_addr), .wdata(uart_wdata), .rdata(uart_rdata),
-    .uart_rx(uart_rx), .uart_tx(uart_tx), .irq(uart_irq),
-    .bp_branch_count(bp_branch_count), .bp_miss_count(bp_miss_count)
-);
 
 //data ram
 data_ram data_ram

@@ -24,10 +24,10 @@ module MEM_stage(
     output wire                         ms_valid_out,
     output wire                         ms_gr_we_out,
     output wire [4:0]                   ms_dest_out,
-    output wire [31:0]                  ms_final_result_out,
+    output wire [31:0]                  ms_forward_result_out,
     // 新增：通知 ID 等待 CSR 状态更新
     output wire ms_csr_pending,
-    output wire                         ms_csr_re_out
+    output wire                         ms_result_pending_out
 );
 
 reg                                 ms_valid;
@@ -150,8 +150,8 @@ assign ms_to_ws_valid =
     ms_ready_go &&
     !wb_flush;
 
-// 新增：提供给 ID 的 CSR 结果等待标志
-assign ms_csr_re_out = ms_valid && ms_csr_re;
+// Load 与 CSR 的最终数据由 WB 前递，MEM 只给 ID 提供寄存后的运算结果。
+assign ms_result_pending_out = ms_valid && (ms_res_from_mem || ms_csr_re);
 
 /* MEM 前递信息 */
 assign ms_valid_out        = ms_valid;
@@ -161,7 +161,7 @@ assign ms_gr_we_out =
     !ms_has_ex &&
     !ms_ertn;
 assign ms_dest_out         = ms_dest;
-assign ms_final_result_out = final_result;
+assign ms_forward_result_out = ms_alu_result;
 
 /* MEM -> WB 流水级总线*/
 assign ms_to_ws_bus = {

@@ -36,6 +36,9 @@ wire        pre_if_ready_go;
 
 wire        br_taken;
 wire [31:0] br_target;
+// 候选：ID 当拍只杀死错误路径，下一拍由寄存后的目标发起纠错取指。
+reg         redirect_pending;
+reg [31:0]  redirect_target;
 
 wire [31:0] seq_pc;
 wire [31:0] nextpc;
@@ -73,6 +76,18 @@ branch_predictor #(.ENABLE(BR_PREDICT_ENABLE)) u_predictor (
 // 只有IF->ID接收的同一上升沿才使用这个预测值并取下一条指令。
 assign fs_pred_nextpc = (fs_valid && !fs_adef && bp_taken) ? bp_target : seq_pc;
 
+// 保持原 ID 解析/训练事件，不把延后的 redirect_pending 当成第二次解析。
+// WB 的异常和 ERTN 优先清除所有较年轻分支留下的纠错请求。
+always @(posedge clk) begin
+    if (reset || wb_flush) begin
+        redirect_pending <= 1'b0;
+        redirect_target <= 32'b0;
+    end else begin
+        redirect_pending <= br_taken;
+        if (br_taken) redirect_target <= br_target;
+    end
+end
+
 
 //==============================================================
 // Pre-IF：选择下一次取指地址
@@ -87,7 +102,7 @@ assign seq_pc = fs_pc + 32'd4;
 assign nextpc =
     wb_ex      ? ex_entry   :
     ertn_flush ? ertn_entry :
-    br_taken   ? br_target  :
+    redirect_pending ? redirect_target :
                  fs_pred_nextpc;
 
 
@@ -106,6 +121,7 @@ assign fs_to_ds_valid =
     fs_valid &&
     fs_ready_go &&
     !br_taken &&
+    !redirect_pending &&
     !wb_flush;
 
 
@@ -117,7 +133,7 @@ assign fs_to_ds_valid =
 // 但仍通过 IF 有效位传递一条带 ADEF 标志的异常指令。
 assign inst_sram_en =
     to_fs_valid &&
-    (fs_allowin || wb_flush) &&
+    (fs_allowin || wb_flush || redirect_pending) &&
     !nextpc_adef;
 
 assign inst_sram_we    = 4'b0000;
@@ -133,7 +149,7 @@ always @(posedge clk) begin
     if (reset) begin
         fs_valid <= 1'b0;
     end
-    else if (wb_flush) begin
+    else if (wb_flush || redirect_pending) begin
         /*
          * 新增：
          * 本上升沿 RAM 已经接收异常/返回目标地址。
@@ -142,6 +158,11 @@ always @(posedge clk) begin
          */
         fs_valid <= to_fs_valid;
     end
+    else if (br_taken) begin
+        // 本沿 RAM 可以完成一次错误路径预取，但它不能成为有效 IF 指令。
+        // 不用 br_taken 门控 RAM enable，避免重新接回 ID→指令 BRAM 长路径。
+        fs_valid <= 1'b0;
+    end
     else if (fs_allowin) begin
         fs_valid <= to_fs_valid;
     end
@@ -149,7 +170,7 @@ always @(posedge clk) begin
     if (reset) begin
         fs_pc <= 32'h1bff_fffc;
     end
-    else if (to_fs_valid && (fs_allowin || wb_flush)) begin
+    else if (to_fs_valid && (fs_allowin || wb_flush || redirect_pending)) begin
         // 修改：重定向不受 ID 阻塞影响
         fs_pc <= nextpc;
     end
@@ -171,7 +192,7 @@ always @(posedge clk) begin
     if (reset) begin
         fs_adef <= 1'b0;
     end
-    else if (to_fs_valid && (fs_allowin || wb_flush)) begin
+    else if (to_fs_valid && (fs_allowin || wb_flush || redirect_pending)) begin
         fs_adef <= nextpc_adef;
     end
 end
