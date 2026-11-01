@@ -1,12 +1,17 @@
 # [新增] 可移植独立工程。用法：Vivado Tcl中 source 本文件；默认ex9。
 # batch: vivado -mode batch -source tools/create_project.tcl -tclargs ex9 1
-# 镜像：ex9、ex8、gpio_demo、uart_irq_echo、branch_bench；第二参数=预测开关0/1。
+# 镜像：ex9、ex8、gpio_demo、uart_irq_echo、branch_bench。
+# 固定板级模板不暴露CPU参数；综合使用CPU默认的预测及I/D Cache开启配置。
+# 测试中的开关对照使用tools/run_xsim.py，在CPU实例覆盖参数。
 set task_root [file normalize [file join [file dirname [info script]] ..]]
 set image ex9
 set predictor 1
 if {[llength $argv] >= 1} {set image [lindex $argv 0]}
 if {[llength $argv] >= 2} {set predictor [lindex $argv 1]}
 if {$predictor ni {0 1}} {error "predictor must be 0 or 1"}
+if {$predictor != 1} {
+    error "The unchanged board template uses CPU default prediction=1. Use run_xsim.py --predictor 0 for simulation; this script cannot override inner CPU synthesis parameters."
+}
 if {$image ni {ex8 ex9 gpio_demo uart_irq_echo branch_bench}} {error "Unknown image $image"}
 if {$image in {ex8 ex9}} {
     set image_dir [file join $task_root for_test_obj ${image}_obj]
@@ -42,14 +47,13 @@ set_property CONFIG.Coe_File [file join $image_dir data_ram.coe] [get_ips data_r
 generate_target all [get_ips]
 export_ip_user_files -of_objects [get_ips] -no_script -sync -force
 set_property top looongson_remote_top [get_filesets sources_1]
-set_property generic "BR_PREDICT_ENABLE=$predictor" [get_filesets sources_1]
 add_files -fileset constrs_1 [file join $task_root board loongson_remote.xdc]
 set tb [file join $task_root mycpu_env soc_verify soc_bram testbench mycpu_tb.v]
 add_files -fileset sim_1 $tb
 set_property file_type SystemVerilog [get_files $tb]
 set_property top tb_top [get_filesets sim_1]
 set trace_enabled [expr {$image eq "ex9"}]
-set_property generic "BR_PREDICT_ENABLE=$predictor TRACE_ENABLE=$trace_enabled" [get_filesets sim_1]
+set_property generic "BR_PREDICT_ENABLE=$predictor TRACE_ENABLE=$trace_enabled ICACHE_ENABLE=1 DCACHE_ENABLE=1" [get_filesets sim_1]
 if {$trace_enabled} {
     add_files -fileset sim_1 [file join $task_root baseline ex9_golden_trace.txt]
     # 在launch_simulation后，把此文件复制到实际运行目录并命名为golden_trace.txt。

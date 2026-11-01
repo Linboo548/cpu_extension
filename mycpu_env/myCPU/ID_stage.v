@@ -37,10 +37,10 @@ module ID_stage(
     input  wire                         ms_valid,
     input  wire                         ms_gr_we,
     input  wire [4:0]                   ms_dest,
-    input  wire [31:0]                  ms_final_result,
+    input  wire [31:0]                  ms_forward_result,
 
-    // 新增：MEM 中的 CSR 结果尚不能使用
-    input  wire                         ms_csr_re
+    // MEM 中的 load/CSR 结果要到 WB 才能前递。
+    input  wire                         ms_result_pending
 );
 
 reg                                  ds_valid;
@@ -787,12 +787,12 @@ wire load_use_hazard =
     es_load_op &&
     (ex_hazard_r1 || ex_hazard_r2);
 
-// 新增：MEM 中的 CSR 指令还没有产生真实写回值。
+// MEM 中的 load/CSR 结果只在 WB 使用，避免 RAM 读数据经 ID 分支直达 IF。
 //
 // 如果 EXE 中有更新的一条指令也写相同寄存器，
 // ID 应依赖更新的 EXE 指令，因此排除对应的 EXE 命中。
-wire csr_use_hazard =
-    ms_csr_re &&
+wire mem_result_hazard =
+    ms_result_pending &&
     (
         (mem_hazard_r1 && !ex_hazard_r1) ||
         (mem_hazard_r2 && !ex_hazard_r2)
@@ -802,7 +802,7 @@ wire csr_use_hazard =
 // 这样不会使用旧的 CRMD/ECFG/ESTAT 状态判断中断。
 wire ds_ready_go =
     !(load_use_hazard ||
-      csr_use_hazard ||
+      mem_result_hazard ||
       es_csr_pending ||
       ms_csr_pending ||
       ws_csr_pending);
@@ -818,8 +818,8 @@ always @(*) begin
     if (ex_hazard_r1 && !es_load_op) begin
         rj_value = es_alu_result;
     end
-    else if (mem_hazard_r1) begin
-        rj_value = ms_final_result;
+    else if (mem_hazard_r1 && !ms_result_pending) begin
+        rj_value = ms_forward_result;
     end
     else if (wb_hazard_r1) begin
         rj_value = rf_wdata;
@@ -828,8 +828,8 @@ always @(*) begin
     if (ex_hazard_r2 && !es_load_op) begin
         rkd_value = es_alu_result;
     end
-    else if (mem_hazard_r2) begin
-        rkd_value = ms_final_result;
+    else if (mem_hazard_r2 && !ms_result_pending) begin
+        rkd_value = ms_forward_result;
     end
     else if (wb_hazard_r2) begin
         rkd_value = rf_wdata;

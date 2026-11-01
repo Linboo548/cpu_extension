@@ -67,30 +67,16 @@ module bridge_1x2(
     output wire [3                   :0] conf_we,          // access confreg enable 
     output wire [31                  :0] conf_addr,        // address
     output wire [31                  :0] conf_wdata,       // write data
-    input  wire [31                  :0] conf_rdata,       // read data
-    // [新增] 第三个从设备：真实UART，保留模块名以减少工程改动。
-    output wire uart_en,
-    output wire [3:0] uart_we,
-    output wire [4:0] uart_addr,
-    output wire [31:0] uart_wdata,
-    input wire [31:0] uart_rdata
+    input  wire [31                  :0] conf_rdata        // read data
 );
     wire sel_sram;  // cpu data is from data ram
     wire sel_conf;  // cpu data is from confreg
 
     reg sel_sram_r; // reg of sel_dram 
     reg sel_conf_r; // reg of sel_conf 
-    wire sel_uart;
-    reg sel_uart_r;
-    wire in_conf_region = (cpu_data_addr & `CONF_ADDR_MASK) == `CONF_ADDR_BASE;
 
-    assign sel_uart = in_conf_region && cpu_data_addr[15:5] == (16'hf100 >> 5);
-    assign sel_conf = in_conf_region && !sel_uart;
-    assign sel_sram = !in_conf_region;
-    assign uart_en = cpu_data_en && sel_uart;
-    assign uart_we = cpu_data_we;
-    assign uart_addr = cpu_data_addr[4:0];
-    assign uart_wdata = cpu_data_wdata;
+    assign sel_conf = (cpu_data_addr & `CONF_ADDR_MASK) == `CONF_ADDR_BASE;
+    assign sel_sram = !sel_conf;
 
     // data sram
     assign data_sram_en    = cpu_data_en & sel_sram;
@@ -110,19 +96,16 @@ module bridge_1x2(
         begin
             sel_sram_r <= 1'b0;
             sel_conf_r <= 1'b0;
-            sel_uart_r <= 1'b0;
         end
         else
         begin
             sel_sram_r <= sel_sram;
             sel_conf_r <= sel_conf;
-            sel_uart_r <= sel_uart;
         end
     end
 
     assign cpu_data_rdata = {32{sel_sram_r}} & data_sram_rdata
-                          | {32{sel_conf_r}} & conf_rdata
-                          | {32{sel_uart_r}} & uart_rdata;
+                          | {32{sel_conf_r}} & conf_rdata;
 
 endmodule
 

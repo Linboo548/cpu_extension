@@ -1,6 +1,6 @@
 `default_nettype none
 
-module looongson_remote_top #(parameter BR_PREDICT_ENABLE=1)(
+module looongson_remote_top(
     input wire clk_50M,           //50MHz 时钟输入
     input wire clk_11M0592,       //11.0592MHz 时钟输入（备用，可不用）
 
@@ -78,10 +78,12 @@ remote2local remote2local
     .remote_dpy0   (dpy0),
     .remote_dpy1   (dpy1)
 );
-soc_lite_top #(.BR_PREDICT_ENABLE(BR_PREDICT_ENABLE)) soc_lite
+soc_lite_top  soc_lite
 (
        .resetn      (local_resetn), 
        .clk         (clk_50M     ),
+       .uart_rx     (rxd         ),
+       .uart_tx     (txd         ),
     
         //------gpio-------
         .num_csn    (              ),
@@ -93,9 +95,6 @@ soc_lite_top #(.BR_PREDICT_ENABLE(BR_PREDICT_ENABLE)) soc_lite
         .switch     (local_switch  ),
         .btn_key_col(              ),
         .btn_key_row(4'b0000       ),
-        .btn_step   ({~touch_btn[0],~touch_btn[1]}), // [修改] confreg bit0=BTN1，bit1=BTN2
-        // [新增] 复用现有直连串口和XDC：txd=H18、rxd=J20。
-        .uart_rx    (rxd),
-        .uart_tx    (txd)
+        .btn_step   (2'b11         )
     );   
 endmodule

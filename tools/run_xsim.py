@@ -17,7 +17,14 @@ ROOT = Path(__file__).resolve().parents[1]
 def command(args, cwd, logfile, env=None, timeout=180):
     args = list(map(str, args))
     if args[0].lower().endswith('.bat'):
-        args = [os.environ.get('COMSPEC', 'cmd.exe'), '/d', '/c', *args]
+        # Vivado's batch loader uses SHIFT, which splits unquoted NAME=VALUE.
+        # Keep every argument quoted through cmd.exe instead of letting
+        # subprocess.list2cmdline omit quotes around generic assignments.
+        if any(any(char in arg for char in ('"', '\r', '\n')) for arg in args):
+            raise ValueError('Unsupported quote/newline in batch tool argument')
+        command_line=' '.join('"'+arg+'"' for arg in args)
+        args=(subprocess.list2cmdline([os.environ.get('COMSPEC', 'cmd.exe'),
+                                      '/d', '/s', '/c'])+' "'+command_line+'"')
     try:
         result = subprocess.run(args, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=timeout)
@@ -68,30 +75,53 @@ def llvm_link(vivado, build, snapshot):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('test', choices=['predictor','uart','cpu_branch','soc_uart','ex8','ex9'])
-    ap.add_argument('--vivado', default='D:/Vivado/Vivado/2023.2')
+    ap.add_argument('test', choices=['predictor','uart','cache','if_cache','cache_cpu',
+                                    'cpu_branch','soc_uart','ex8','ex9'])
+    ap.add_argument('--vivado', default=os.environ.get('XILINX_VIVADO',
+                                                      'D:/Software/Vivado/2023.2'))
     ap.add_argument('--predictor', type=int, choices=(0, 1), default=1,
-                    help='Prediction switch for ex9 regression (default: 1)')
+                    help='Prediction switch for SoC/ex8/ex9 regression (default: 1)')
+    ap.add_argument('--cache', type=int, choices=(0, 1), default=1,
+                    help='Enable both I/D caches for CPU/SoC regression (default: 1)')
+    ap.add_argument('--build-root', type=Path, default=ROOT/'build'/'xsim',
+                    help='Parent of isolated per-configuration result directories')
     ap.add_argument('--llvm-fallback',action='store_true',
                     help='Experimental local diagnostic; not required in a working Vivado installation')
     ns=ap.parse_args()
     vivado=Path(ns.vivado)
-    if ns.test != 'ex9' and not ns.predictor:
-        ap.error('--predictor 0 is only supported for ex9')
-    build=ROOT/'build'/('ex9_bp0' if ns.test=='ex9' and not ns.predictor else ns.test)
+    cpu_tests = ('cpu_branch', 'soc_uart', 'ex8', 'ex9')
+    if ns.test not in ('soc_uart', 'ex8', 'ex9') and not ns.predictor:
+        ap.error('--predictor 0 is only supported for soc_uart/ex8/ex9')
+    if ns.test not in cpu_tests and not ns.cache:
+        ap.error('--cache 0 is only supported for cpu_branch/soc_uart/ex8/ex9')
+    tag = ns.test
+    if ns.test in ('soc_uart', 'ex8', 'ex9'):
+        tag += '_bp'+str(ns.predictor)
+    if ns.test in cpu_tests:
+        tag += '_cache'+str(ns.cache)
+    build=ns.build_root.resolve()/tag
     build.mkdir(parents=True,exist_ok=True)
     cpu_dir=ROOT/'mycpu_env/myCPU'
     rtl_dir=ROOT/'mycpu_env/soc_verify/soc_bram/rtl'
     if ns.test=='predictor': files=[cpu_dir/'branch_predictor.v']
     elif ns.test=='uart': files=[rtl_dir/'uart_mmio.v']
+    elif ns.test=='cache': files=[cpu_dir/'cpu_sram_cache.v']
+    elif ns.test=='if_cache': files=[cpu_dir/'branch_predictor.v', cpu_dir/'IF_stage.v']
     else:
         files=sorted(cpu_dir.glob('*.v'))+[ROOT/'tests/sim_models.sv']
-        if ns.test!='cpu_branch':
+        if ns.test not in ('cpu_branch', 'cache_cpu'):
             files += [rtl_dir/'uart_mmio.v',rtl_dir/'soc_lite_top.v',
                       rtl_dir/'BRIDGE/bridge_1x2.v',rtl_dir/'CONFREG/confreg.v']
-        image={'cpu_branch':'branch_bench','soc_uart':'uart_irq_echo'}.get(ns.test,ns.test)
+        image={'cpu_branch':'branch_bench', 'cache_cpu':'cache_bench',
+               'soc_uart':'uart_irq_echo'}.get(ns.test,ns.test)
         image_dir=(ROOT/'for_test_obj'/(image+'_obj') if ns.test in ('ex8','ex9')
                    else ROOT/'software'/image)
+        if ns.test=='cache_cpu':
+            image_dir=build/'image'
+            rc,out=command([sys.executable, ROOT/'tools/assemble.py',
+                            ROOT/'software/cache_bench.S', '--out', image_dir, '--full'],
+                           build, build/'assemble.log')
+            if rc: raise RuntimeError(out)
         for name in ('inst_ram.mif','data_ram.mif'):
             shutil.copy2(image_dir/name,build/name)
     top='tb_'+ns.test
@@ -107,21 +137,36 @@ def main():
     if rc: raise RuntimeError(out)
     snapshot=ns.test+'_standalone'
     generics=['--generic_top','TRACE_ENABLE=0'] if ns.test=='ex8' else []
+    if ns.test in cpu_tests:
+        generics += ['--generic_top', 'ICACHE_ENABLE='+str(ns.cache),
+                     '--generic_top', 'DCACHE_ENABLE='+str(ns.cache)]
+    if ns.test in ('soc_uart', 'ex8', 'ex9') and not (ns.test=='ex9' and not ns.predictor):
+        generics += ['--generic_top', 'BR_PREDICT_ENABLE='+str(ns.predictor)]
     rc,out=command([vivado/'bin/xelab.bat','work.'+top,'-s',snapshot,*generics,
                     '--standalone','--mt','off','--timescale','1ns/1ps'],
                    build,build/'elaborate.log')
+    used_llvm = False
     if rc:
         if not ns.llvm_fallback or 'Failed to compile generated C file' not in out:
             raise RuntimeError(out+'\nSimulation did not run. No PASS is claimed.')
         print('Using installed LLVM for generated XSim C driver (GCC unavailable).')
         llvm_link(vivado,build,snapshot)
+        used_llvm = True
     task_env=dict(os.environ)
     task_env['PATH']=str(vivado/'lib/win64.o')+';'+str(vivado/'tps/mingw/9.3.0/win64.o/nt/bin')+';'+task_env.get('PATH','')
     task_env['XILINX_VIVADO']=str(vivado)
-    simulator = ([build/'axsim.bat', '-runall'] if (build/'axsim.bat').exists()
-                 else [build/'xsim.dir'/snapshot/'xsimk.exe'])
+    snapshot_dir=build/'xsim.dir'/snapshot
+    if used_llvm:
+        # The fallback links xsimk.exe; an old axsim.bat must not select a stale binary.
+        simulator=[snapshot_dir/'xsimk.exe']
+    elif (snapshot_dir/'axsim.exe').exists():
+        simulator=[snapshot_dir/'axsim.exe', '-runall']
+    elif (snapshot_dir/'xsimk.exe').exists():
+        simulator=[snapshot_dir/'xsimk.exe']
+    else:
+        raise RuntimeError('Elaboration produced no simulator executable in '+str(snapshot_dir))
     rc,out=command(simulator,build,build/'simulate.log',env=task_env,
-                    timeout=600 if ns.test in ('ex8','ex9') else 45)
+                    timeout=600 if ns.test in ('ex8','ex9') else 90)
     print(out)
     passed=('----PASS!!!' in out if ns.test in ('ex8','ex9') else 'PASS ' in out)
     if rc or not passed or 'Fatal:' in out or 'Error!!!' in out:
